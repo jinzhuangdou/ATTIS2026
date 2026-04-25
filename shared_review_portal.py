@@ -29,9 +29,9 @@ PIN_EXPORT_PATH = Path(os.getenv("ATTIS_PIN_EXPORT_PATH", str(BASE_DIR / "review
 # Default reviewer passwords (Blazer ID format).
 # These are applied on startup so deployed instances stay consistent.
 DEFAULT_REVIEWER_PASSWORDS = {
-    "Chen, Jake Y": "jalechen",
+    "Chen, Jake Y": "jakechen",
     "Garmire, Lana": "lgarmire",
-    "Chen, Jin (Campus)": "jhchen",
+    "Chen, Jin (Campus)": "jinchen",
     "Mosa, Abu S": "asmosa",
     "Chong, Zechen": "zchong",
     "Osborne, John D": "josborne",
