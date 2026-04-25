@@ -26,6 +26,19 @@ WORKBOOK_PATH = Path(
 DB_PATH = Path(os.getenv("ATTIS_DB_PATH", str(BASE_DIR / "review_portal.db")))
 PIN_EXPORT_PATH = Path(os.getenv("ATTIS_PIN_EXPORT_PATH", str(BASE_DIR / "reviewer_pins.csv")))
 
+# Default reviewer passwords (Blazer ID format).
+# These are applied on startup so deployed instances stay consistent.
+DEFAULT_REVIEWER_PASSWORDS = {
+    "Chen, Jake Y": "jalechen",
+    "Garmire, Lana": "lgarmire",
+    "Chen, Jin (Campus)": "jhchen",
+    "Mosa, Abu S": "asmosa",
+    "Chong, Zechen": "zchong",
+    "Osborne, John D": "josborne",
+    "Jinzhuang Dou": "jdou",
+    "Amy Wang": "amywang",
+}
+
 
 def safe(value) -> str:
     return "" if value is None else str(value).strip()
@@ -101,22 +114,18 @@ def _ensure_reviewer_auth(conn: sqlite3.Connection) -> List[Dict[str, str]]:
             "SELECT DISTINCT reviewer FROM assignments ORDER BY reviewer COLLATE NOCASE"
         ).fetchall()
     ]
-    existing = {
-        r["reviewer"]: r["pin_hash"]
-        for r in conn.execute("SELECT reviewer, pin_hash FROM reviewer_auth").fetchall()
-    }
-
     pin_rows: List[Dict[str, str]] = []
     for reviewer in reviewers:
-        if reviewer in existing:
-            # Existing reviewer keeps previous PIN; not recoverable from hash.
-            pin_rows.append({"reviewer": reviewer, "pin": "UNCHANGED"})
-            continue
-        pin = "".join(secrets.choice("0123456789") for _ in range(6))
+        pin = DEFAULT_REVIEWER_PASSWORDS.get(reviewer)
+        if not pin:
+            # Fallback for any future reviewer not in the fixed list.
+            pin = "".join(secrets.choice("0123456789") for _ in range(6))
         conn.execute(
-            "INSERT INTO reviewer_auth (reviewer, pin_hash) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO reviewer_auth (reviewer, pin_hash) VALUES (?, ?)",
             (reviewer, _hash_pin(pin)),
         )
+        # Invalidate old sessions so password updates are effective immediately.
+        conn.execute("DELETE FROM sessions WHERE reviewer = ?", (reviewer,))
         pin_rows.append({"reviewer": reviewer, "pin": pin})
 
     placeholders = ",".join("?" for _ in reviewers) or "''"
