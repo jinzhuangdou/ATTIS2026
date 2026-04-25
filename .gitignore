@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+review_portal.db
+admin_access_key.txt
+reviewer_pins.csv
+reviewer_blazer_ids.csv
