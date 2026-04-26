@@ -26,6 +26,9 @@ WORKBOOK_PATH = Path(
 )
 DB_PATH = Path(os.getenv("ATTIS_DB_PATH", str(BASE_DIR / "review_portal.db")))
 PIN_EXPORT_PATH = Path(os.getenv("ATTIS_PIN_EXPORT_PATH", str(BASE_DIR / "reviewer_pins.csv")))
+PRESERVE_REVIEWS_ON_SYNC = (
+    os.getenv("PRESERVE_REVIEWS_ON_SYNC", "true").strip().lower() in ("1", "true", "yes", "y", "on")
+)
 
 # Default reviewer passwords (Blazer ID format).
 # These are applied on startup so deployed instances stay consistent.
@@ -237,14 +240,15 @@ def sync_from_workbook() -> Dict[str, int]:
             "INSERT INTO assignments (abstract_id, reviewer) VALUES (?, ?)",
             assignments,
         )
-        conn.execute(
-            """
-            DELETE FROM reviews
-            WHERE (abstract_id, reviewer) NOT IN (
-              SELECT abstract_id, reviewer FROM assignments
+        if not PRESERVE_REVIEWS_ON_SYNC:
+            conn.execute(
+                """
+                DELETE FROM reviews
+                WHERE (abstract_id, reviewer) NOT IN (
+                  SELECT abstract_id, reviewer FROM assignments
+                )
+                """
             )
-            """
-        )
         pin_rows = _ensure_reviewer_auth(conn)
     _write_pin_file(pin_rows)
     return {"abstracts": len(abstracts), "assignments": len(assignments)}
