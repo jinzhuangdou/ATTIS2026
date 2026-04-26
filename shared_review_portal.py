@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import io
+import json
 import hashlib
 import os
 import secrets
@@ -38,6 +39,18 @@ DEFAULT_REVIEWER_PASSWORDS = {
     "Jinzhuang Dou": "jdou",
     "Amy Wang": "amywang",
 }
+
+
+def get_reviewer_password_map() -> Dict[str, str]:
+    raw = os.getenv("REVIEWER_PASSWORDS_JSON", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+        except Exception as e:
+            print(f"[ATTIS] Invalid REVIEWER_PASSWORDS_JSON, fallback to defaults: {e}")
+    return DEFAULT_REVIEWER_PASSWORDS
 
 
 def safe(value) -> str:
@@ -114,9 +127,10 @@ def _ensure_reviewer_auth(conn: sqlite3.Connection) -> List[Dict[str, str]]:
             "SELECT DISTINCT reviewer FROM assignments ORDER BY reviewer COLLATE NOCASE"
         ).fetchall()
     ]
+    password_map = get_reviewer_password_map()
     pin_rows: List[Dict[str, str]] = []
     for reviewer in reviewers:
-        pin = DEFAULT_REVIEWER_PASSWORDS.get(reviewer)
+        pin = password_map.get(reviewer)
         if not pin:
             # Fallback for any future reviewer not in the fixed list.
             pin = "".join(secrets.choice("0123456789") for _ in range(6))
