@@ -37,7 +37,6 @@ DEFAULT_REVIEWER_PASSWORDS = {
     "Garmire, Lana": "lgarmire",
     "Chen, Jin (Campus)": "jinchen",
     "Mosa, Abu S": "asmosa",
-    "Chong, Zechen": "zchong",
     "Osborne, John D": "josborne",
     "Jinzhuang Dou": "jdou",
     "Amy Wang": "amywang",
@@ -539,7 +538,6 @@ def index() -> str:
             <div class="title">${esc(a.title || "(No title)")}</div>
             <div class="chips">
               <span class="chip">Abstract #${esc(a.abstract_id)}</span>
-              <span class="chip">PI: ${esc(a.pi || "N/A")}</span>
               <span class="chip">Keywords: ${esc(a.keywords || "N/A")}</span>
             </div>
           </div>
@@ -786,7 +784,7 @@ def get_assigned(
     reviewer = _reviewer_from_token(x_auth_token)
     query = """
     SELECT
-      a.abstract_id, a.source_row, a.pi, a.title,
+      a.abstract_id, a.source_row, a.title,
       a.abstract_body, a.keywords,
       r.topic_fitness, r.approach, r.results, r.innovation, r.note, r.updated_at
     FROM assignments x
@@ -796,7 +794,6 @@ def get_assigned(
       AND (
         :q = ''
         OR lower(a.title) LIKE '%' || lower(:q) || '%'
-        OR lower(a.pi) LIKE '%' || lower(:q) || '%'
         OR lower(a.keywords) LIKE '%' || lower(:q) || '%'
         OR lower(a.abstract_body) LIKE '%' || lower(:q) || '%'
       )
