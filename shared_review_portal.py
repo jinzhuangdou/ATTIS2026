@@ -42,6 +42,7 @@ DEFAULT_REVIEWER_PASSWORDS = {
     "Jinzhuang Dou": "jdou",
     "Amy Wang": "amywang",
 }
+SUMMARY_ADMINS = {"Jinzhuang Dou", "Garmire, Lana"}
 
 
 def get_reviewer_password_map() -> Dict[str, str]:
@@ -410,6 +411,7 @@ def index() -> str:
     let current = [];
     let authToken = localStorage.getItem("attis_auth_token") || "";
     let currentReviewer = localStorage.getItem("attis_reviewer") || "";
+    const SUMMARY_ADMINS = ["Jinzhuang Dou", "Garmire, Lana"];
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
@@ -430,6 +432,10 @@ def index() -> str:
       return { ...extra, "X-Auth-Token": authToken };
     }
 
+    function canViewSummary() {
+      return !!(authToken && SUMMARY_ADMINS.includes(currentReviewer));
+    }
+
     async function loadReviewers() {
       const res = await fetch("/api/reviewers");
       const data = await res.json();
@@ -448,12 +454,14 @@ def index() -> str:
         pinInput.disabled = true;
         loginBtn.disabled = true;
         logoutBtn.disabled = false;
+        adminTab.style.display = canViewSummary() ? "" : "none";
       } else {
         authStatus.textContent = "Not logged in";
         loginReviewerSelect.disabled = false;
         pinInput.disabled = false;
         loginBtn.disabled = false;
         logoutBtn.disabled = true;
+        adminTab.style.display = "none";
       }
     }
 
@@ -539,10 +547,6 @@ def index() -> str:
             <section>
               <div class="label">Abstract</div>
               <div class="text">${esc(a.abstract_body || "N/A")}</div>
-              <div class="label" style="margin-top:10px;">Authors</div>
-              <div class="text">${esc(a.authors || "N/A")}</div>
-              <div class="label" style="margin-top:10px;">Affiliations</div>
-              <div class="text">${esc(a.affiliations || "N/A")}</div>
             </section>
             <section>
               <div class="label">Scoring (0-10 each)</div>
@@ -612,7 +616,16 @@ def index() -> str:
     }
 
     async function loadSummary() {
-      const res = await fetch("/api/summary");
+      const res = await fetch("/api/summary", { headers: authHeaders() });
+      if (res.status === 401) {
+        await logout();
+        alert("Session expired. Please login again.");
+        return;
+      }
+      if (res.status === 403) {
+        alert("You are not allowed to view overall summary.");
+        return;
+      }
       const data = await res.json();
 
       summaryTable.innerHTML = `
@@ -656,6 +669,10 @@ def index() -> str:
       reviewSection.classList.remove("hidden"); adminSection.classList.add("hidden");
     });
     adminTab.addEventListener("click", async () => {
+      if (!canViewSummary()) {
+        alert("Only Jinzhuang and Lana can view overall summary.");
+        return;
+      }
       adminTab.classList.add("active"); reviewTab.classList.remove("active");
       adminSection.classList.remove("hidden"); reviewSection.classList.add("hidden");
       await loadSummary();
@@ -769,8 +786,8 @@ def get_assigned(
     reviewer = _reviewer_from_token(x_auth_token)
     query = """
     SELECT
-      a.abstract_id, a.source_row, a.pi, a.title, a.authors, a.affiliations,
-      a.email, a.phone, a.abstract_body, a.keywords,
+      a.abstract_id, a.source_row, a.pi, a.title,
+      a.abstract_body, a.keywords,
       r.topic_fitness, r.approach, r.results, r.innovation, r.note, r.updated_at
     FROM assignments x
     JOIN abstracts a ON a.abstract_id = x.abstract_id
@@ -836,7 +853,10 @@ def upsert_review(
 
 
 @app.get("/api/summary")
-def summary():
+def summary(x_auth_token: Optional[str] = Header(default=None, alias="X-Auth-Token")):
+    reviewer = _reviewer_from_token(x_auth_token)
+    if reviewer not in SUMMARY_ADMINS:
+        raise HTTPException(status_code=403, detail="Not allowed to view overall summary")
     with get_conn() as conn:
         abstract_rows = conn.execute(
             """
