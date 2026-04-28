@@ -37,6 +37,7 @@ DEFAULT_REVIEWER_PASSWORDS = {
     "Garmire, Lana": "lgarmire",
     "Chen, Jin (Campus)": "jinchen",
     "Mosa, Abu S": "asmosa",
+    "Chong, Zechen": "zchong",
     "Osborne, John D": "josborne",
     "Jinzhuang Dou": "jdou",
     "Amy Wang": "amywang",
