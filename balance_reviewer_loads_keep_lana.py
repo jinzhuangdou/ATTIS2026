@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
 Reassign flexible reviewer slots (cols 5,10,15 excluding preserved Garmire,Lana)
-so that each non-Lana reviewer has as close to the same workload as possible.
+so each non-Lana reviewer’s load stays in **[LOAD_MIN, LOAD_MAX]** per run (defaults
+10–12). Totals stay consistent with preserved Lana (flex slot count summed over rows).
 
 Preserves: every existing Garmire, Lana cell (row/column/value), PI conflict rules
-from reassign_three_reviewers_pi_safe.clear column 20.
+from `reassign_three_reviewers_pi_safe`, clear column 20.
 
-Target: with 30 abstracts × 3 = 90 slots and Lana fixed on 13 abstracts, the other
-7 reviewers share 77 flex slots (~11 each). The optimizer minimizes max−min load.
+The optimizer rejects counts outside the band first, then spreads load using random
+integer targets that sum exactly to the flex-slot total — **not forced to eleven each**.
 
 Run:  python balance_reviewer_loads_keep_lana.py
 """
 
 from __future__ import annotations
 
+import itertools
 import random
 import shutil
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from openpyxl import load_workbook
 
@@ -39,9 +41,46 @@ def norm_name(s: str) -> str:
 LANA = "Garmire, Lana"
 NON_LANA: List[str] = [r for r in REVIEWER_POOL if r != LANA]
 
+# Flexible-slot load bounds for non-Lana reviewers (inclusive).
+LOAD_MIN = 10
+LOAD_MAX = 12
+
 BACKUP = WORKBOOK.parent / (
-    "ATTIS abstract submission_April 21, 2026_09.24_with_review_assignments_BACKUP_before_balance_loads.xlsx"
+    "ATTIS abstract submission_April 21, 2026_09.24_with_review_assignments_BACKUP_before_balance_10_to_12.xlsx"
 )
+
+
+def enumerate_load_patterns(n_reviewers: int, flex_total: int) -> List[Tuple[int, ...]]:
+    """All integer tuples of length n_reviewers summing to flex_total with values in [LOAD_MIN, LOAD_MAX]."""
+    rng = range(LOAD_MIN, LOAD_MAX + 1)
+    out = [tup for tup in itertools.product(rng, repeat=n_reviewers) if sum(tup) == flex_total]
+    if not out:
+        raise ValueError(f"No feasible load pattern: {flex_total=} {LOAD_MIN}-{LOAD_MAX} for {n_reviewers} reviewers")
+    return out
+
+
+def pick_targets(rng: random.Random, patterns: Sequence[Tuple[int, ...]]) -> Dict[str, int]:
+    """Random multiset paired with reviewer names; prefer patterns that are not all eleven."""
+    varied = [p for p in patterns if any(v != 11 for v in p)]
+    use = rng.choice(varied if varied else list(patterns))
+    vals = list(use)
+    rng.shuffle(vals)
+    return dict(zip(NON_LANA, vals))
+
+
+def band_violation(cnt: Counter[str]) -> int:
+    s = 0
+    for r in NON_LANA:
+        x = cnt[r]
+        if x < LOAD_MIN:
+            s += (LOAD_MIN - x) ** 2
+        elif x > LOAD_MAX:
+            s += (x - LOAD_MAX) ** 2
+    return s
+
+
+def sq_err(cnt: Counter[str], target: Dict[str, int]) -> int:
+    return sum((cnt[r] - target[r]) ** 2 for r in NON_LANA)
 
 
 class RowSpec(NamedTuple):
@@ -87,8 +126,12 @@ def load_row_specs(wb) -> List[RowSpec]:
     return specs
 
 
-def greedy_assign(specs: Sequence[RowSpec], rng: random.Random) -> Dict[Tuple[int, int], str]:
-    """Assign each flex cell; returns map (excel_row, col) -> reviewer."""
+def greedy_assign(
+    specs: Sequence[RowSpec],
+    rng: random.Random,
+    target: Dict[str, int],
+) -> Dict[Tuple[int, int], str]:
+    """Assign each flex cell; pick per-row combinations that best match target loads and [LOAD_MIN,LOAD_MAX]."""
     order = list(specs)
     rng.shuffle(order)
     counts: Counter[str] = Counter()
@@ -97,21 +140,30 @@ def greedy_assign(specs: Sequence[RowSpec], rng: random.Random) -> Dict[Tuple[in
     for spec in order:
         cols = spec.flex_cols
         k = len(cols)
+        if k == 0:
+            continue
+
         allowed = [r for r in NON_LANA if r in spec.allowed]
         if len(allowed) < k:
             raise RuntimeError(f"Row {spec.excel_row}: allowed pool too small")
 
-        picked: List[str] = []
-        # Pick k distinct reviewers updating counts greedily each step.
-        for _ in range(k):
-            rest = [r for r in allowed if r not in picked]
-            if not rest:
-                raise RuntimeError(f"Row {spec.excel_row}: cannot assign {k} distinct")
-            chosen = min(rest, key=lambda r: (counts[r], r))
-            picked.append(chosen)
-            counts[chosen] += 1
+        best_combo: Optional[Tuple[str, ...]] = None
+        best_key: Optional[Tuple[int, int]] = None
 
-        for col, name in zip(sorted(cols), picked):
+        for combo in itertools.combinations(allowed, k):
+            tmp = Counter(counts)
+            for person in combo:
+                tmp[person] += 1
+            key = (band_violation(tmp), sq_err(tmp, target))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_combo = combo
+
+        assert best_combo is not None
+        for person in best_combo:
+            counts[person] += 1
+
+        for col, name in zip(sorted(cols), sorted(best_combo)):
             out[(spec.excel_row, col)] = name
 
     return out
@@ -122,13 +174,11 @@ def all_counts(assign: Dict[Tuple[int, int], str]) -> Counter[str]:
     return cnt
 
 
-def score_tuple(cnt: Counter[str]) -> Tuple[int, int]:
-    """Lower is better: (max-min spread, variance proxy)."""
+def lex_score(cnt: Counter[str], target: Dict[str, int]) -> Tuple[int, int, int]:
+    """Lower is better: band violations, squared error vs target, spread."""
     vals = [cnt[r] for r in NON_LANA]
     spread = max(vals) - min(vals) if vals else 0
-    mean = sum(vals) / len(vals) if vals else 0
-    var_like = sum((v - mean) ** 2 for v in vals)
-    return spread, int(round(var_like * 10))
+    return band_violation(cnt), sq_err(cnt, target), spread
 
 
 def feasible_replace(
@@ -150,24 +200,27 @@ def local_search(
     specs: Sequence[RowSpec],
     assign: Dict[Tuple[int, int], str],
     rng: random.Random,
-    max_iters: int = 45_000,
+    target: Dict[str, int],
+    max_iters: int = 18_000,
 ) -> Dict[Tuple[int, int], str]:
     assign = dict(assign)
     spec_by_row = {s.excel_row: s for s in specs}
 
-    def score_now() -> Tuple[int, int]:
-        return score_tuple(all_counts(assign))
+    def score_now() -> Tuple[int, int, int]:
+        return lex_score(all_counts(assign), target)
 
     best_scr = score_now()
     best_map = dict(assign)
 
-    def improve_from(candidate: Dict[Tuple[int, int], str], scr: Tuple[int, int]) -> None:
+    def improve_from(candidate: Dict[Tuple[int, int], str], scr: Tuple[int, int, int]) -> None:
         nonlocal best_scr, best_map
         if scr <= best_scr:
             best_scr = scr
             best_map = dict(candidate)
 
     for _ in range(max_iters):
+        if best_scr[0] == 0 and best_scr[1] == 0:
+            break
         if rng.random() < 0.72:
             spec = rng.choice(specs)
             row = spec.excel_row
@@ -274,16 +327,20 @@ def main() -> None:
     lana_snap = snapshot_lana_cells(ra_before)
     specs = load_row_specs(wb)
 
-    best_assign: Dict[Tuple[int, int], str] | None = None
-    best_global = (999, 999)
+    flex_total = sum(len(s.flex_cols) for s in specs)
+    patterns = enumerate_load_patterns(len(NON_LANA), flex_total)
 
-    for restart in range(120):
+    best_assign: Dict[Tuple[int, int], str] | None = None
+    best_global: Tuple[int, int, int] = (999, 999, 999)
+
+    for restart in range(72):
         rng = random.Random(10_000 + restart)
-        a0 = greedy_assign(specs, rng)
+        target = pick_targets(rng, patterns)
+        a0 = greedy_assign(specs, rng, target)
         rng2 = random.Random(restart + 50_000)
-        a1 = local_search(specs, a0, rng2)
+        a1 = local_search(specs, a0, rng2, target)
         cnt = all_counts(a1)
-        scr = score_tuple(cnt)
+        scr = lex_score(cnt, target)
         if scr <= best_global:
             best_global = scr
             best_assign = a1
@@ -291,13 +348,18 @@ def main() -> None:
     assert best_assign is not None
     verify(specs, best_assign, lana_snap)
 
+    cnt_chk = Counter(best_assign.values())
+    if band_violation(cnt_chk) != 0:
+        raise RuntimeError(f"Could not satisfy loads in [{LOAD_MIN},{LOAD_MAX}]: {dict(cnt_chk)}")
+
     apply_assignment(wb, best_assign, lana_snap)
 
     wb.save(WORKBOOK)
     wb.close()
 
     cnt_final = Counter(best_assign.values())
-    print("Objective (spread, tiebreak):", best_global)
+    print(f"Loads must stay in [{LOAD_MIN}, {LOAD_MAX}], flex slots = {flex_total}")
+    print("Objective (violations, sq_err, spread):", best_global)
     print("Flexible-slot loads (non-Lana):")
     for name in NON_LANA:
         print(f"  {name:24} {cnt_final[name]}")
