@@ -29,6 +29,13 @@ PIN_EXPORT_PATH = Path(os.getenv("ATTIS_PIN_EXPORT_PATH", str(BASE_DIR / "review
 PRESERVE_REVIEWS_ON_SYNC = (
     os.getenv("PRESERVE_REVIEWS_ON_SYNC", "true").strip().lower() in ("1", "true", "yes", "y", "on")
 )
+# If true (default): do not run sync_from_workbook on app startup — call POST /api/sync manually when workbook changes.
+# Safer paired with persisted ATTIS_DB_PATH if you rarely change assignments mid-review.
+SKIP_STARTUP_SYNC = (
+    os.getenv("SKIP_STARTUP_SYNC", "false").strip().lower() in ("1", "true", "yes", "y", "on")
+)
+
+_REV_SNAP_TABLE = "_attis_reviews_snapshot"
 
 # Default reviewer passwords (Blazer ID format).
 # These are applied on startup so deployed instances stay consistent.
@@ -223,6 +230,18 @@ def sync_from_workbook() -> Dict[str, int]:
                 assignments.append((abstract_id, reviewer))
 
     with get_conn() as conn:
+        # Clearing assignments cascades-delete reviews (SQLite FK); snapshot first so preserved rows can survive sync.
+        if PRESERVE_REVIEWS_ON_SYNC:
+            conn.execute(f"DROP TABLE IF EXISTS {_REV_SNAP_TABLE}")
+            conn.execute(
+                f"""
+                CREATE TEMP TABLE {_REV_SNAP_TABLE} AS
+                SELECT abstract_id, reviewer, topic_fitness, approach, results,
+                       innovation, note, updated_at
+                FROM reviews
+                """
+            )
+
         conn.execute("DELETE FROM assignments")
         conn.execute("DELETE FROM abstracts")
         conn.executemany(
@@ -241,7 +260,23 @@ def sync_from_workbook() -> Dict[str, int]:
             "INSERT INTO assignments (abstract_id, reviewer) VALUES (?, ?)",
             assignments,
         )
-        if not PRESERVE_REVIEWS_ON_SYNC:
+        if PRESERVE_REVIEWS_ON_SYNC:
+            conn.execute("DELETE FROM reviews")
+            conn.execute(
+                f"""
+                INSERT INTO reviews (
+                  abstract_id, reviewer, topic_fitness, approach, results,
+                  innovation, note, updated_at
+                )
+                SELECT s.abstract_id, s.reviewer,
+                       s.topic_fitness, s.approach, s.results,
+                       s.innovation, s.note, s.updated_at
+                FROM {_REV_SNAP_TABLE} s
+                INNER JOIN assignments a
+                  ON a.abstract_id = s.abstract_id AND a.reviewer = s.reviewer
+                """
+            )
+        else:
             conn.execute(
                 """
                 DELETE FROM reviews
@@ -294,7 +329,9 @@ app = FastAPI(title="ATTIS 2026 abstract shared review panel")
 def startup() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     init_db()
-    if WORKBOOK_PATH.exists():
+    if SKIP_STARTUP_SYNC:
+        print("[ATTIS] SKIP_STARTUP_SYNC is set — not loading workbook until POST /api/sync")
+    elif WORKBOOK_PATH.exists():
         sync_from_workbook()
     else:
         print(f"[ATTIS] Workbook not found at startup: {WORKBOOK_PATH}")
