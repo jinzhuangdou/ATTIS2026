@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+Legacy: four-column randomization (cols 5, 10, 15, 20) without PI rules.
+
+Prefer `reassign_three_reviewers_pi_safe.py` for current ATTIS policy:
+three reviewers only, own-lab conflicts avoided, Lana cells preserved,
+column 20 cleared.
+
 Re-randomize reviewer slots (cols 5, 10, 15, 20) for each abstract.
 Cells that already contain Garmire, Lana are left unchanged; all other
 reviewer cells in that row are filled with a random assignment without
